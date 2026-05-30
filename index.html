@@ -49,48 +49,55 @@ const TIEMPO_ESPERA_MS = 3000; // 3 segundos de espera para el mismo código
 
 
 function iniciarCamara() {
-    // 1. Verificación de seguridad de la librería
     if (typeof Html5QrcodeScanner === 'undefined' || typeof Html5QrcodeSupportedFormats === 'undefined') {
-        console.error("❌ Error crítico: La librería html5-qrcode no se ha cargado completamente en el navegador.");
+        console.error("❌ Error: Librería ausente.");
         return;
     }
 
-    console.log("🔄 Configurando escáner para códigos de barras...");
-
     const config = { 
-        fps: 20, // Mayor velocidad de fotogramas para capturar el código rápido
-        qrbox: { width: 320, height: 160 }, 
+        fps: 24, // Máxima velocidad permitida en navegadores móviles para capturas fluidas
+        qrbox: { width: 280, height: 130 }, // Caja de escaneo estrecha para códigos de barra planos
         rememberLastUsedCamera: true,
+        // Forzamos al motor a usar el detector nativo del sistema si está disponible
         experimentalFeatures: {
-            useBarCodeDetectorIfSupported: true // Utiliza aceleración de hardware si el navegador lo permite
+            useBarCodeDetectorIfSupported: true 
         },
-        // Formatos comerciales estándar ordenados por prioridad
+        // Filtramos estrictamente los formatos para agilizar el procesamiento en iOS
         formatsToSupport: [ 
             Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
             Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.UPC_A,
             Html5QrcodeSupportedFormats.QR_CODE
-        ]
+        ],
+        // CONFIGURACIÓN CRÍTICA PARA IPHONE: Forzar autoenfoque y resolución adecuada
+        videoConstraints: {
+            facingMode: { exact: "environment" }, // Obliga a usar la cámara trasera
+            focusMode: "continuous",              // Fuerza el autoenfoque constante en iOS
+            width: { ideal: 1280 },               // Resolución HD para nitidez de líneas
+            height: { ideal: 720 }
+        }
     };
 
-    // Crear el escáner desactivando el modo espejo (esencial para MacBook)
-    html5QrcodeScanner = new Html5QrcodeScanner("reader", config, /* verbose= */ false);
+    // Inicializamos el lector desactivando el modo espejo
+    html5QrcodeScanner = new Html5QrcodeScanner("reader", config, false);
     
     html5QrcodeScanner.render(onScanSuccess, onScanFailure)
         .then(() => {
-            console.log("✅ Cámara inicializada exitosamente.");
-            // Forzar desactivación de espejo en el elemento de video si existe
+            console.log("✅ Cámara inicializada.");
+            // Asegurar que la imagen no esté invertida en pantallas táctiles
             setTimeout(() => {
                 const videoEl = document.querySelector("#reader video");
                 if (videoEl) {
-                    videoEl.style.transform = "scaleX(1)"; // Quita el modo espejo de la Mac
-                    console.log("📸 Modo espejo desactivado para lectura lineal.");
+                    videoEl.style.transform = "scaleX(1)";
                 }
-            }, 1000);
+            }, 800);
         })
         .catch(err => {
-            console.error("❌ Error al renderizar la cámara:", err);
+            console.error("❌ Error de cámara:", err);
         });
 }
+
 
 function onScanSuccess(decodedText, decodedResult) {
     const ahora = Date.now();
