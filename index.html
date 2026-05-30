@@ -3,188 +3,151 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Escáner de Inventario Pro</title>
-    <script src="https://unpkg.com" type="text/javascript"></script>
-    
+    <title>Control de Inventario</title>
+    <!-- Cargamos la librería oficial para escanear desde el navegador -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" type="text/javascript"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f6f9; text-align: center; }
-        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        #reader { width: 100%; border-radius: 8px; overflow: hidden; background: #222; }
-        .resultado-box { margin-top: 15px; padding: 15px; border-radius: 8px; background-color: #e3f2fd; border: 1px solid #90caf9; font-weight: bold; font-size: 1.1rem; }
-        .status { color: #666; font-size: 0.9rem; margin-top: 5px; }
-        
-        /* Estilos para el nuevo botón de sincronización */
-        .sync-panel { margin-top: 15px; padding: 15px; border-radius: 8px; background-color: #fff3e0; border: 1px solid #ffe0b2; }
-        .btn-sync { background-color: #ff9800; color: white; border: none; padding: 10px 20px; font-size: 1rem; font-weight: bold; border-radius: 6px; cursor: pointer; width: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .btn-sync:disabled { background-color: #bdbdbd; cursor: not-allowed; }
-        .badge-pendientes { display: inline-block; background-color: #e65100; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85rem; margin-left: 5px; }
+        body { font-family: Arial, sans-serif; display: flex; justify-content: center; padding: 20px; background-color: #f5f7fb; }
+        .container { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        h2 { margin-bottom: 5px; }
+        .subtitle { color: #666; margin-bottom: 20px; }
+        #reader { width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+        .status-box { background: #e3f2fd; border: 1px solid #90caf9; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .sync-box { background: #fff3e0; border: 1px solid #ffe0b2; padding: 15px; border-radius: 8px; }
+        button { width: 100%; padding: 12px; background: #a0aec0; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; }
+        button.active { background: #3182ce; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <h2>Control de Inventario</h2>
-    <p>Apunta al código de barras del producto</p>
-    
+    <p class="subtitle">Apunta al código de barras del producto</p>
+
+    <!-- AQUÍ SE MOSTRARÁ LA CÁMARA -->
     <div id="reader"></div>
-    
-    <div class="resultado-box">
-        Último código: <span id="resultado-texto">Esperando...</span>
-        <div id="api-status" class="status">Listo para escanear</div>
+
+    <div class="status-box">
+        <strong id="codigo-resultado">Último código: Esperando...</strong>
+        <div style="color: #555; font-size: 14px; margin-top: 5px;">Listo para escanear</div>
     </div>
 
-    <!-- PANEL NUEVO: Sincronización Fuera de Línea -->
-    <div class="sync-panel">
-        <p style="margin: 0 0 10px 0; color: #e65100; font-weight: bold;">
-            Códigos pendientes: <span id="contador-pendientes" class="badge-pendientes">0</span>
-        </p>
-        <button id="btn-sincronizar" class="btn-sync" onclick="sincronizarDatos()" disabled>
-            🔄 Sincronizar con PostgreSQL
-        </button>
-        <div id="sync-status" class="status" style="margin-top: 5px;"></div>
+    <div class="sync-box">
+        <span style="color: #e65100; font-weight: bold;">Códigos pendientes: <span id="contador">0</span></span>
+        <button id="btn-sync" onclick="sincronizarPostgres()">🔄 Sincronizar con PostgreSQL</button>
     </div>
 </div>
 
 <script>
-    // CONFIGURACIÓN DE LA IP (Modifica con la IP de tu Mac)
-    const URL_SERVIDOR_JAVA = 'http://localhost:8000/Downloads/webserver/';
+    let codigosPendientes = [];
+let html5QrcodeScanner; // Declaramos la variable globalmente
 
-    let db;
-    const request = indexedDB.open("InventarioLocal", 1);
+// NUEVAS VARIABLES PARA CONTROLAR LOS DUPLICADOS
+let ultimoCodigoLeido = "";
+let ultimaHoraLectura = 0;
+const TIEMPO_ESPERA_MS = 3000; // 3 segundos de espera para el mismo código
 
-    request.onupgradeneeded = function(event) {
-        db = event.target.result;
-        if (!db.objectStoreNames.contains("escaneos")) {
-            // Añadimos un índice "sincronizado" para saber qué códigos faltan por subir
-            const store = db.createObjectStore("escaneos", { keyPath: "id", autoIncrement: true });
-            store.createIndex("sincronizado", "sincronizado", { unique: false });
-        }
+
+function iniciarCamara() {
+    // 1. Verificación de seguridad de la librería
+    if (typeof Html5QrcodeScanner === 'undefined' || typeof Html5QrcodeSupportedFormats === 'undefined') {
+        console.error("❌ Error crítico: La librería html5-qrcode no se ha cargado completamente en el navegador.");
+        return;
+    }
+
+    console.log("🔄 Configurando escáner para códigos de barras...");
+
+    const config = { 
+        fps: 20, // Mayor velocidad de fotogramas para capturar el código rápido
+        qrbox: { width: 320, height: 160 }, 
+        rememberLastUsedCamera: true,
+        experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true // Utiliza aceleración de hardware si el navegador lo permite
+        },
+        // Formatos comerciales estándar ordenados por prioridad
+        formatsToSupport: [ 
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.QR_CODE
+        ]
     };
 
-    request.onsuccess = function(event) {
-        db = event.target.result;
-        actualizarContadorPendientes(); // Contar si quedaron pendientes de la sesión anterior
-    };
-
-    // Inicializar escáner óptico
-    const html5QrcodeScanner = new Html5QrcodeScanner(
-        "reader", { fps: 10, qrbox: { width: 280, height: 150 }, rememberLastUsedCamera: true }, false
-    );
-
-    // ACCIÓN AL ESCANEAR UN CÓDIGO
-    function onScanSuccess(decodedText, decodedResult) {
-        document.getElementById("resultado-texto").innerText = decodedText;
-        document.getElementById("api-status").innerText = "Procesando...";
-
-        // Primero intentamos mandarlo en tiempo real a Java
-        enviarAJava(decodedText)
-            .then(() => {
-                // Si la red funciona: guardamos en el dispositivo marcado como ya SINCRONIZADO
-                guardarLocalmente(decodedText, 1);
-                document.getElementById("api-status").innerText = "¡Guardado en Local y PostgreSQL!";
-                document.getElementById("api-status").style.color = "green";
-            })
-            .catch(() => {
-                // Si falla la red (sin Wi-Fi): guardamos marcado como NO SINCRONIZADO (0)
-                guardarLocalmente(decodedText, 0);
-                document.getElementById("api-status").innerText = "Sin señal. Guardado en memoria local.";
-                document.getElementById("api-status").style.color = "orange";
-                actualizarContadorPendientes();
-            });
-    }
-
-    // Guardar en la base de datos interna del celular/tablet
-    function guardarLocalmente(codigo, estadoSincronizacion) {
-        if (!db) return;
-        const transaccion = db.transaction(["escaneos"], "readwrite");
-        const almacen = transaccion.objectStore("escaneos");
-        almacen.add({
-            codigo: codigo,
-            fecha: new Date().toISOString(),
-            sincronizado: estadoSincronizacion // 1 = Sí, 0 = No
+    // Crear el escáner desactivando el modo espejo (esencial para MacBook)
+    html5QrcodeScanner = new Html5QrcodeScanner("reader", config, /* verbose= */ false);
+    
+    html5QrcodeScanner.render(onScanSuccess, onScanFailure)
+        .then(() => {
+            console.log("✅ Cámara inicializada exitosamente.");
+            // Forzar desactivación de espejo en el elemento de video si existe
+            setTimeout(() => {
+                const videoEl = document.querySelector("#reader video");
+                if (videoEl) {
+                    videoEl.style.transform = "scaleX(1)"; // Quita el modo espejo de la Mac
+                    console.log("📸 Modo espejo desactivado para lectura lineal.");
+                }
+            }, 1000);
+        })
+        .catch(err => {
+            console.error("❌ Error al renderizar la cámara:", err);
         });
+}
+
+function onScanSuccess(decodedText, decodedResult) {
+    const ahora = Date.now();
+    
+    // Si es el mismo código y no han pasado 3 segundos, lo ignoramos
+    if (decodedText === ultimoCodigoLeido && (ahora - ultimaHoraLectura) < TIEMPO_ESPERA_MS) {
+        return; // Salir de la función sin hacer nada
     }
+    
+    // Actualizar el registro del último código leído
+    ultimoCodigoLeido = decodedText;
+    ultimaHoraLectura = ahora;
 
-    // Promesa para enviar peticiones REST al servidor Java
-    function enviarAJava(codigo) {
-        return fetch(URL_SERVIDOR_JAVA, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ codigo: codigo })
-        }).then(res => {
-            if (!res.ok) throw new Error("Error en servidor");
-            return res.json();
-        });
+    console.log(`🎯 ¡Código detectado de forma única!: ${decodedText}`);
+    
+    // Actualizar interfaz visual
+    const resultadoEl = document.getElementById("codigo-resultado");
+    resultadoEl.innerText = `Último código: ${decodedText}`;
+    
+    // Feedback visual temporal: Poner fondo verde en el contenedor del texto
+    const statusBox = document.querySelector(".status-box");
+    statusBox.style.background = "#c8e6c9"; // Verde claro
+    setTimeout(() => {
+        statusBox.style.background = "#e3f2fd"; // Vuelve al azul original
+    }, 1000);
+    
+    // Agregar a la lista para PostgreSQL
+    codigosPendientes.push(decodedText);
+    document.getElementById("contador").innerText = codigosPendientes.length;
+    
+    // Activar botón de sincronización
+    const btn = document.getElementById("btn-sync");
+    btn.classList.add("active");
+}
+
+function onScanFailure(error) {
+    // El escáner analiza cuadros por segundo constantemente. 
+    // Dejar vacío para no inundar la consola de errores de "código no detectado".
+}
+
+function sincronizarPostgres() {
+    if(codigosPendientes.length === 0) {
+        alert("No hay códigos para sincronizar.");
+        return;
     }
+    
+    alert(`Sincronizando ${codigosPendientes.length} códigos con PostgreSQL...`);
+    // Tu futura integración con ServidorInventario.java irá aquí
+    
+    codigosPendientes = [];
+    document.getElementById("contador").innerText = "0";
+    document.getElementById("btn-sync").classList.remove("active");
+}
 
-    // Contar cuántos registros están en cero (sin conexión) para activar el botón
-    function actualizarContadorPendientes() {
-        if (!db) return;
-        const transaccion = db.transaction(["escaneos"], "readonly");
-        const almacen = transaccion.objectStore("escaneos");
-        const indice = almacen.index("sincronizado");
-        const consulta = indice.count(IDBKeyRange.only(0)); // Cuenta los que tengan sincronizado = 0
+// Evento moderno y seguro que espera que todo el HTML y scripts externos estén listos
+document.addEventListener("DOMContentLoaded", iniciarCamara);
 
-        consulta.onsuccess = function() {
-            const pendientes = consulta.result;
-            document.getElementById("contador-pendientes").innerText = pendientes;
-            const btn = document.getElementById("btn-sincronizar");
-            
-            if (pendientes > 0) {
-                btn.disabled = false;
-                btn.style.backgroundColor = "#ff9800";
-            } else {
-                btn.disabled = true;
-                btn.style.backgroundColor = "#bdbdbd";
-            }
-        };
-    }
-
-    // LÓGICA DEL BOTÓN: Enviar en lote todo lo acumulado offline
-    function sincronizarDatos() {
-        if (!db) return;
-        document.getElementById("sync-status").innerText = "Sincronizando lote...";
-        document.getElementById("btn-sincronizar").disabled = true;
-
-        const transaccion = db.transaction(["escaneos"], "readwrite");
-        const almacen = transaccion.objectStore("escaneos");
-        const indice = almacen.index("sincronizado");
-        const solicitudCursor = indice.openCursor(IDBKeyRange.only(0));
-
-        let promesasEnvio = [];
-        let registrosProcesados = [];
-
-        solicitudCursor.onsuccess = function(event) {
-            const cursor = event.target.result;
-            if (cursor) {
-                const registro = cursor.value;
-                registrosProcesados.push(registro);
-                
-                // Metemos cada envío a una lista de espera
-                promesasEnvio.push(
-                    enviarAJava(registro.codigo)
-                        .then(() => {
-                            // Si se envía bien, actualizamos su estado local a 1 (sincronizado)
-                            registro.sincronizado = 1;
-                            almacen.put(registro);
-                        })
-                        .catch(err => console.log("Un elemento no pudo subirse aún"))
-                );
-                cursor.continue();
-            } else {
-                // Cuando el cursor termina de revisar todos los pendientes, ejecuta los envíos
-                if (promesasEnvio.length === 0) return;
-
-                Promise.allSettled(promesasEnvio).then(() => {
-                    document.getElementById("sync-status").innerText = "¡Proceso de sincronización terminado!";
-                    actualizarContadorPendientes();
-                    setTimeout(() => { document.getElementById("sync-status").innerText = ""; }, 3000);
-                });
-            }
-        };
-    }
-
-    html5QrcodeScanner.render(onScanSuccess, function(error) {});
 </script>
 
 </body>
