@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Facturación y Consulta de Stock</title>
+    <!-- Cargamos la librería oficial html5-qrcode -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" type="text/javascript"></script>
+    <style>
+        :root {
+            --ios-blue: #0071e3;
+            --ios-green: #34c759;
+            --ios-red: #ff3b30;
+            --bg-gray: #f5f5f7;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; justify-content: center; padding: 20px; background-color: var(--bg-gray); margin: 0; }
+        .container { background: white; padding: 24px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.05); width: 100%; max-width: 480px; text-align: center; box-sizing: border-box; }
+        h2 { margin: 0 0 5px 0; font-weight: 600; }
+        .subtitle { color: #86868b; margin-bottom: 20px; font-size: 14px; }
+        
+        /* Contenedor de cámara rectangular óptimo para barras */
+        #reader { width: 100%; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 20px; border: none !important; }
+        #reader button { background-color: var(--ios-blue); color: white; border: none; padding: 12px; font-size: 14px; font-weight: bold; border-radius: 8px; width: 100%; margin: 10px 0; cursor: pointer; }
+
+        /* Tarjeta de visualización de datos del producto */
+        .product-card { background: #fafafa; border: 1px solid #d2d2d7; padding: 20px; border-radius: 12px; text-align: left; margin-top: 15px; display: none; }
+        .product-title { font-size: 1.25rem; font-weight: 600; color: #1d1d1f; margin-bottom: 10px; border-bottom: 1px solid #e5e5ea; padding-bottom: 8px; }
+        .product-meta { font-size: 1rem; margin: 6px 0; color: #424245; display: flex; justify-content: space-between; }
+        
+        /* Badges de estado dinámicos */
+        .badge { font-weight: bold; padding: 2px 8px; border-radius: 4px; color: white; }
+        .badge-success { background-color: var(--ios-green); }
+        .badge-danger { background-color: var(--ios-red); }
+        
+        /* Cargador o avisos de estado */
+        .status-message { color: var(--ios-blue); font-weight: 500; margin-top: 15px; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Facturación / Consulta</h2>
+    <p class="subtitle">Escanea un artículo para verificar datos y precio</p>
+
+    <!-- ZONA DEL ESCÁNER -->
+    <div id="reader"></div>
+
+    <!-- MENSAJES DE ESTADO (BUSCANDO...) -->
+    <div id="status" class="status-message">Buscando producto...</div>
+
+    <!-- TARJETA CON EL RESULTADO DE POSTGRESQL -->
+    <div id="product-result" class="product-card">
+        <div id="p-nombre" class="product-title">📦 Nombre del Producto</div>
+        <div class="product-meta">
+            <span>Precio Unitario:</span>
+            <strong id="p-precio" style="color: #1d1d1f; font-size: 1.15rem;">$0.00</strong>
+        </div>
+        <div class="product-meta">
+            <span>Disponibilidad:</span>
+            <span id="p-stock-badge" class="badge badge-success">0 uds</span>
+        </div>
+        <div class="product-meta" style="margin-top: 10px; font-size: 12px; color: #86868b;">
+            <span>Código de barras:</span>
+            <span id="p-codigo">00000000</span>
+        </div>
+    </div>
+</div>
+
+<script>
+let html5QrcodeScanner;
+let escaneoBloqueado = false; 
+const TIEMPO_REINICIO_MS = 3000; // Bloqueo de 3s para no repetir el escaneo del mismo objeto
+
+// URL base de tu ServidorInventario.java unificado
+const SERVIDOR_API = 'http://192.168.1.223:8080'; 
+
+function iniciarEscaner() {
+    const config = { 
+        fps: 20, 
+        qrbox: { width: 300, height: 140 }, // Cuadro delgado horizontal para códigos de barras
+        rememberLastUsedCamera: true,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+        formatsToSupport: [ 
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.UPC_A
+        ],
+        videoConstraints: {
+            facingMode: { exact: "environment" }, // Forzar cámara trasera en iPhone
+            focusMode: "continuous",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+        }
+    };
+
+    html5QrcodeScanner = new Html5QrcodeScanner("reader", config, false);
+    html5QrcodeScanner.render(onScanSuccess, onScanFailure)
+        .then(() => {
+            // Corrección de efecto espejo en dispositivos Apple con cámara externa
+            setTimeout(() => {
+                const videoEl = document.querySelector("#reader video");
+                if (videoEl) videoEl.style.transform = "scaleX(1)";
+            }, 800);
+        })
+        .catch(err => console.error("Error inicializando cámara:", err));
+}
+
+// 🚀 LOGICA DE CONSULTA AUTOMÁTICA EN TIEMPO REAL (MÉTODO GET)
+function onScanSuccess(decodedText, decodedResult) {
+    if (escaneoBloqueado) return; // Evita peticiones duplicadas en milisegundos
+    escaneoBloqueado = true;
+
+    // Feedback táctil/auditivo visual inmediato
+    mostrarEstado(`🔍 Buscando código: ${decodedText}...`);
+    ocultarTarjeta();
+
+    // Construcción de la URL limpia hacia el caso GET de tu servidor Java
+    const urlConsulta = `${SERVIDOR_API}/api/inventario?codigo=${encodeURIComponent(decodedText)}`;
+
+    // Consulta directa a ServidorInventario.java
+    fetch(urlConsulta)
+        .then(response => {
+            if (response.status === 404) throw new Error("Producto no registrado en el catálogo");
+            if (!response.ok) throw new Error("Error de comunicación con el servidor");
+            return response.json();
+        })
+        .then(data => {
+            if (data.status === "success") {
+                // Rellenar los campos de la tarjeta con los datos de PostgreSQL
+                document.getElementById("p-nombre").innerText = `📦 ${data.nombre}`;
+                document.getElementById("p-precio").innerText = `$${data.precio.toFixed(2)}`;
+                document.getElementById("p-codigo").innerText = decodedText;
+                
+                const stockBadge = document.getElementById("p-stock-badge");
+                stockBadge.innerText = `${data.stock} unidades`;
+
+                // Cambiar color del badge de stock si se está agotando
+                if (data.stock <= 5) {
+                    stockBadge.className = "badge badge-danger";
+                } else {
+                    stockBadge.className = "badge badge-success";
+                }
+
+                ocultarEstado();
+                mostrarTarjeta();
+            }
+        })
+        .catch(error => {
+            console.error(error);
+            mostrarEstado(`❌ ${error.message}`);
+            document.getElementById("status").style.color = "var(--ios-red)";
+        })
+        .finally(() => {
+            // Liberar el escáner tras una pausa para que el operador pueda cambiar de producto
+            setTimeout(() => {
+                escaneoBloqueado = false;
+                if(document.getElementById("status").innerText.startsWith("❌")) {
+                    ocultarEstado();
+                }
+            }, TIEMPO_REINICIO_MS);
+        });
+}
+
+function onScanFailure(error) {
+    // Silencioso durante el análisis de cuadros
+}
+
+function mostrarEstado(msg) {
+    const el = document.getElementById("status");
+    el.innerText = msg;
+    el.style.color = "var(--ios-blue)";
+    el.style.display = "block";
+}
+
+function ocultarEstado() {
+    document.getElementById("status").style.display = "none";
+}
+
+function mostrarTarjeta() {
+    document.getElementById("product-result").style.display = "block";
+}
+
+function ocultarTarjeta() {
+    document.getElementById("product-result").style.display = "none";
+}
+
+// Iniciar el ciclo de vida del componente al cargar el DOM
+window.addEventListener('DOMContentLoaded', iniciarEscaner);
+</script>
+</body>
+</html>

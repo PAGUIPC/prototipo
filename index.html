@@ -25,7 +25,12 @@
     <p class="subtitle">Apunta al código de barras del producto</p>
 
     <!-- AQUÍ SE MOSTRARÁ LA CÁMARA -->
-    <div id="reader"></div>
+    <div id="reader" style="width: 100%; max-width: 500px; margin: 0 auto;"></div>
+
+    <!-- Contenedor para mostrar los datos devueltos por ServidorInventario.java -->
+    <div id="resultado" style="margin-top: 20px; font-size: 1.2em; text-align: center;">
+        Esperando código de barras...
+    </div>
 
     <div class="status-box">
         <strong id="codigo-resultado">Último código: Esperando...</strong>
@@ -39,14 +44,16 @@
 </div>
 
 <script>
-    let codigosPendientes = [];
-let html5QrcodeScanner; // Declaramos la variable globalmente
+let codigosPendientes = [];
+let html5QrcodeScanner; 
 
 // NUEVAS VARIABLES PARA CONTROLAR LOS DUPLICADOS
 let ultimoCodigoLeido = "";
 let ultimaHoraLectura = 0;
-const TIEMPO_ESPERA_MS = 3000; // 3 segundos de espera para el mismo código
+const TIEMPO_ESPERA_MS = 3000; 
 
+// 🚨 LÍNEA AGREGADA: Dirección de tu ServidorInventario.java híbrido (Modificar según entorno)
+const SERVIDOR_API = 'http://192.168.1.223:8080'; 
 
 function iniciarCamara() {
     if (typeof Html5QrcodeScanner === 'undefined' || typeof Html5QrcodeSupportedFormats === 'undefined') {
@@ -55,14 +62,12 @@ function iniciarCamara() {
     }
 
     const config = { 
-        fps: 24, // Máxima velocidad permitida en navegadores móviles para capturas fluidas
-        qrbox: { width: 280, height: 130 }, // Caja de escaneo estrecha para códigos de barra planos
+        fps: 24, 
+        qrbox: { width: 280, height: 130 }, 
         rememberLastUsedCamera: true,
-        // Forzamos al motor a usar el detector nativo del sistema si está disponible
         experimentalFeatures: {
             useBarCodeDetectorIfSupported: true 
         },
-        // Filtramos estrictamente los formatos para agilizar el procesamiento en iOS
         formatsToSupport: [ 
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.EAN_8,
@@ -70,22 +75,19 @@ function iniciarCamara() {
             Html5QrcodeSupportedFormats.UPC_A,
             Html5QrcodeSupportedFormats.QR_CODE
         ],
-        // CONFIGURACIÓN CRÍTICA PARA IPHONE: Forzar autoenfoque y resolución adecuada
         videoConstraints: {
-            facingMode: { exact: "environment" }, // Obliga a usar la cámara trasera
-            focusMode: "continuous",              // Fuerza el autoenfoque constante en iOS
-            width: { ideal: 1280 },               // Resolución HD para nitidez de líneas
+            facingMode: { exact: "environment" }, 
+            focusMode: "continuous",              
+            width: { ideal: 1280 },               
             height: { ideal: 720 }
         }
     };
 
-    // Inicializamos el lector desactivando el modo espejo
     html5QrcodeScanner = new Html5QrcodeScanner("reader", config, false);
     
     html5QrcodeScanner.render(onScanSuccess, onScanFailure)
         .then(() => {
             console.log("✅ Cámara inicializada.");
-            // Asegurar que la imagen no esté invertida en pantallas táctiles
             setTimeout(() => {
                 const videoEl = document.querySelector("#reader video");
                 if (videoEl) {
@@ -102,60 +104,95 @@ function iniciarCamara() {
 function onScanSuccess(decodedText, decodedResult) {
     const ahora = Date.now();
     
-    // Si es el mismo código y no han pasado 3 segundos, lo ignoramos
     if (decodedText === ultimoCodigoLeido && (ahora - ultimaHoraLectura) < TIEMPO_ESPERA_MS) {
-        return; // Salir de la función sin hacer nada
+        return; 
     }
     
-    // Actualizar el registro del último código leído
     ultimoCodigoLeido = decodedText;
     ultimaHoraLectura = ahora;
 
     console.log(`🎯 ¡Código detectado de forma única!: ${decodedText}`);
     
-    // Actualizar interfaz visual
     const resultadoEl = document.getElementById("codigo-resultado");
     resultadoEl.innerText = `Último código: ${decodedText}`;
     
-    // Feedback visual temporal: Poner fondo verde en el contenedor del texto
     const statusBox = document.querySelector(".status-box");
-    statusBox.style.background = "#c8e6c9"; // Verde claro
+    statusBox.style.background = "#c8e6c9"; 
     setTimeout(() => {
-        statusBox.style.background = "#e3f2fd"; // Vuelve al azul original
+        statusBox.style.background = "#e3f2fd"; 
     }, 1000);
     
-    // Agregar a la lista para PostgreSQL
     codigosPendientes.push(decodedText);
     document.getElementById("contador").innerText = codigosPendientes.length;
     
-    // Activar botón de sincronización
     const btn = document.getElementById("btn-sync");
     btn.classList.add("active");
 }
 
 function onScanFailure(error) {
-    // El escáner analiza cuadros por segundo constantemente. 
-    // Dejar vacío para no inundar la consola de errores de "código no detectado".
+    // Silencioso para evitar saturar la consola
 }
 
+// 🚨 FUNCIÓN CORREGIDA Y COMPLETADA
 function sincronizarPostgres() {
     if(codigosPendientes.length === 0) {
         alert("No hay códigos para sincronizar.");
         return;
     }
     
-    alert(`Sincronizando ${codigosPendientes.length} códigos con PostgreSQL...`);
-    // Tu futura integración con ServidorInventario.java irá aquí
+    // Detener el escáner mientras procesamos la red
+    html5QrcodeScanner.clear(); 
     
-    codigosPendientes = [];
-    document.getElementById("contador").innerText = "0";
-    document.getElementById("btn-sync").classList.remove("active");
+    document.getElementById('resultado').innerText = `Sincronizando ${codigosPendientes.length} códigos con PostgreSQL...`;
+    
+    // Como tu backend lee un código a la vez por parámetro (?codigo=XYZ), 
+    // tomamos el ÚLTIMO código escaneado de la lista para consultarlo.
+    const codigoAEnviar = codigosPendientes[codigosPendientes.length - 1];
+    const urlServidor = `${SERVIDOR_API}/api/inventario/escanear?codigo=${encodeURIComponent(codigoAEnviar)}`;
+    
+    // Hacer la petición HTTP a tu ServidorInventario.java
+    fetch(urlServidor)
+        .then(response => {
+            if (response.status === 404) throw new Error("Producto no registrado en PostgreSQL");
+            if (!response.ok) throw new Error("Error de conexión con el servidor");
+            return response.json();
+        })
+        .then(data => {
+            // Renderizar la respuesta del servidor en la pantalla del iPhone/Mac
+            if(data.status === "success") {
+                document.getElementById('resultado').innerHTML = `
+                    <div style="background: #c8e6c9; padding: 12px; border-radius: 8px; border: 1px solid #81c784; margin-bottom: 10px; color: #1b5e20;">
+                        <strong>📦 Producto:</strong> ${data.nombre}<br>
+                        <strong>💰 Precio:</strong> $${data.precio.toFixed(2)}<br>
+                        <strong>🔢 Stock:</strong> ${data.stock} unidades
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            console.error("Error:", error);
+            document.getElementById('resultado').innerHTML = `
+                <div style="background: #ffcdd2; padding: 12px; border-radius: 8px; border: 1px solid #e57373; color: #b71c1c;">
+                    ⚠️ ${error.message}
+                </div>
+            `;
+        })
+        .finally(() => {
+            // Limpiar la cola local tras intentar la sincronización
+            codigosPendientes = [];
+            document.getElementById("contador").innerText = "0";
+            document.getElementById("btn-sync").classList.remove("active");
+
+            // Reiniciar el escáner automáticamente para el siguiente producto
+            setTimeout(() => {
+                document.getElementById('resultado').innerText = "Esperando código de barras...";
+                html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+            }, TIEMPO_ESPERA_MS);
+        });
 }
 
-// Evento moderno y seguro que espera que todo el HTML y scripts externos estén listos
-document.addEventListener("DOMContentLoaded", iniciarCamara);
-
+// 🚨 LÍNEA AGREGADA CRÍTICA: Encender la cámara automáticamente al cargar la página
+window.addEventListener('DOMContentLoaded', iniciarCamara);
 </script>
-
 </body>
 </html>
