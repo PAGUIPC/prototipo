@@ -2,178 +2,159 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Lector de Inventario Universal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control de Inventario</title>
+    <!-- Cargamos la librería oficial para escanear desde el navegador -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" type="text/javascript"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f7fb; display: flex; justify-content: center; }
-        .container { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 100%; max-width: 450px; text-align: center; }
-        h2 { margin: 0 0 5px 0; color: #1a202c; }
-        .subtitle { color: #718096; margin-bottom: 20px; font-size: 14px; }
-        
-        /* Contenedores de cámara */
-        .camera-box { position: relative; width: 100%; min-height: 220px; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 20px; display: none; }
-        #video-ios { width: 100%; height: 220px; object-fit: cover; }
-        .laser-line { position: absolute; top: 50%; left: 5%; width: 90%; height: 2px; background-color: #e53e3e; box-shadow: 0 0 8px #e53e3e; transform: translateY(-50%); z-index: 10; }
-        
-        .status-box { background: #ebf8ff; border: 1px solid #bee3f8; padding: 15px; border-radius: 10px; margin-bottom: 15px; transition: background 0.3s; }
-        .sync-box { background: #fffaf0; border: 1px solid #feebc8; padding: 15px; border-radius: 10px; }
-        button { width: 100%; padding: 14px; background: #cbd5e0; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; }
+        body { font-family: Arial, sans-serif; display: flex; justify-content: center; padding: 20px; background-color: #f5f7fb; }
+        .container { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        h2 { margin-bottom: 5px; }
+        .subtitle { color: #666; margin-bottom: 20px; }
+        #reader { width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+        .status-box { background: #e3f2fd; border: 1px solid #90caf9; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .sync-box { background: #fff3e0; border: 1px solid #ffe0b2; padding: 15px; border-radius: 8px; }
+        button { width: 100%; padding: 12px; background: #a0aec0; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; }
         button.active { background: #3182ce; }
-        .badge { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 11px; font-weight: bold; margin-bottom: 10px; color: white; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <h2>Control de Inventario</h2>
-    <div id="os-badge" class="badge" style="background: #4a5568;">Detectando sistema...</div>
-    <p class="subtitle">Apunta al código de barras de tu producto</p>
+    <p class="subtitle">Apunta al código de barras del producto</p>
 
-    <!-- CONTENEDOR OPTIMIZADO PARA IPHONE (ZXing) -->
-    <div id="container-ios" class="camera-box">
-        <video id="video-ios" playsinline></video>
-        <div class="laser-line"></div>
-    </div>
+    <!-- AQUÍ SE MOSTRARÁ LA CÁMARA -->
+    <div id="reader"></div>
 
-    <!-- CONTENEDOR OPTIMIZADO PARA ANDROID (Html5-Qrcode) -->
-    <div id="container-android" class="camera-box">
-        <div id="reader-android" style="width:100%;"></div>
-    </div>
-
-    <div class="status-box" id="status-card">
+    <div class="status-box">
         <strong id="codigo-resultado">Último código: Esperando...</strong>
+        <div style="color: #555; font-size: 14px; margin-top: 5px;">Listo para escanear</div>
     </div>
 
     <div class="sync-box">
-        <span style="color: #dd6b20; font-weight: bold;">Códigos listos: <span id="contador">0</span></span>
+        <span style="color: #e65100; font-weight: bold;">Códigos pendientes: <span id="contador">0</span></span>
         <button id="btn-sync" onclick="sincronizarPostgres()">🔄 Sincronizar con PostgreSQL</button>
     </div>
 </div>
 
 <script>
     let codigosPendientes = [];
-    let ultimoCodigo = "";
-    let ultimaLecturaTime = 0;
-    let esIOS = false; // Define si usará la librería ZXing (exclusivo iPhone/iPad)
-    let textoMensaje = "Modo: PC / Laptop Optimizado"; // Texto por defecto para Windows/Linux
+let html5QrcodeScanner; // Declaramos la variable globalmente
 
-    // 1. Detectar el sistema operativo exacto
-    const userAgent = navigator.userAgent || navigator.vendor || window.opera;
-    const plataforma = navigator.platform || "";
+// NUEVAS VARIABLES PARA CONTROLAR LOS DUPLICADOS
+let ultimoCodigoLeido = "";
+let ultimaHoraLectura = 0;
+const TIEMPO_ESPERA_MS = 3000; // 3 segundos de espera para el mismo código
 
-    const esDispositivoMovilApple = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
-    const esMac = /Mac/.test(plataforma) || /Macintosh/.test(userAgent);
 
-    if (esDispositivoMovilApple) {
-        esIOS = true; // Activa motor ZXing
-        textoMensaje = "Modo: iOS Optimizado";  // (ZXing)
-    } else if (esMac) {
-        esIOS = false; // Mantiene el motor que te funciona bien en la Mac
-        textoMensaje = "Modo: macOS Optimizado"; // html5-qrcode
-    } else if (/Android/.test(userAgent)) {
-        esIOS = false;
-        textoMensaje = "Modo: Android Optimizado"; // html5-qrcode
+function iniciarCamara() {
+    if (typeof Html5QrcodeScanner === 'undefined' || typeof Html5QrcodeSupportedFormats === 'undefined') {
+        console.error("❌ Error: Librería ausente.");
+        return;
     }
 
-    // Carga dinámica de librerías según el dispositivo
-    function cargarLibreriaAdecuada() {
-        const script = document.createElement('script');
-        script.type = 'text/javascript';
-
-        // Inyectamos el texto personalizado directamente en el badge verde
-        const badge = document.getElementById('os-badge');
-        badge.innerText = textoMensaje;
-
-        if (esIOS) {
-            document.getElementById('os-badge').style.background = "#000000";
-            document.getElementById('container-ios').style.display = 'block';
-            script.src = "https://unpkg.com/@zxing/index.min.js";
-            script.onload = iniciarScannerIOS;
-        } else {
-            document.getElementById('os-badge').style.background = "#38a169";
-            document.getElementById('container-android').style.display = 'block';
-            script.src = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
-            script.onload = iniciarScannerAndroid;
+    const config = { 
+        fps: 24, // Máxima velocidad permitida en navegadores móviles para capturas fluidas
+        qrbox: { width: 280, height: 130 }, // Caja de escaneo estrecha para códigos de barra planos
+        rememberLastUsedCamera: true,
+        // Forzamos al motor a usar el detector nativo del sistema si está disponible
+        experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true 
+        },
+        // Filtramos estrictamente los formatos para agilizar el procesamiento en iOS
+        formatsToSupport: [ 
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.QR_CODE
+        ],
+        // CONFIGURACIÓN CRÍTICA PARA IPHONE: Forzar autoenfoque y resolución adecuada
+        videoConstraints: {
+            facingMode: { exact: "environment" }, // Obliga a usar la cámara trasera
+            focusMode: "continuous",              // Fuerza el autoenfoque constante en iOS
+            width: { ideal: 1280 },               // Resolución HD para nitidez de líneas
+            height: { ideal: 720 }
         }
-        document.head.appendChild(script);
-    }
+    };
 
-    // ==========================================
-    // MOTOR DE ESCANEO A: IPHONE / IPAD (ZXing)
-    // ==========================================
-    function iniciarScannerIOS() {
-        const codeReader = new ZXing.BrowserBarcodeReader();
-        const constraints = {
-            video: {
-                facingMode: { exact: "environment" },
-                focusMode: "continuous",
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
-            }
-        };
-
-        codeReader.decodeFromUserConsentResult(undefined, 'video-ios', constraints, (result, error) => {
-            if (result) {
-                evaluarYRegistrarCodigo(result.text);
-            }
+    // Inicializamos el lector desactivando el modo espejo
+    html5QrcodeScanner = new Html5QrcodeScanner("reader", config, false);
+    
+    html5QrcodeScanner.render(onScanSuccess, onScanFailure)
+        .then(() => {
+            console.log("✅ Cámara inicializada.");
+            // Asegurar que la imagen no esté invertida en pantallas táctiles
+            setTimeout(() => {
+                const videoEl = document.querySelector("#reader video");
+                if (videoEl) {
+                    videoEl.style.transform = "scaleX(1)";
+                }
+            }, 800);
+        })
+        .catch(err => {
+            console.error("❌ Error de cámara:", err);
         });
+}
+
+
+function onScanSuccess(decodedText, decodedResult) {
+    const ahora = Date.now();
+    
+    // Si es el mismo código y no han pasado 3 segundos, lo ignoramos
+    if (decodedText === ultimoCodigoLeido && (ahora - ultimaHoraLectura) < TIEMPO_ESPERA_MS) {
+        return; // Salir de la función sin hacer nada
     }
+    
+    // Actualizar el registro del último código leído
+    ultimoCodigoLeido = decodedText;
+    ultimaHoraLectura = ahora;
 
-    // ==========================================
-    // MOTOR DE ESCANEO B: ANDROID / PC (Html5Qrcode)
-    // ==========================================
-    function iniciarScannerAndroid() {
-        const config = { 
-            fps: 20, 
-            qrbox: { width: 300, height: 150 },
-            formatsToSupport: [ 
-                Html5QrcodeSupportedFormats.EAN_13,
-                Html5QrcodeSupportedFormats.CODE_128
-            ]
-        };
+    console.log(`🎯 ¡Código detectado de forma única!: ${decodedText}`);
+    
+    // Actualizar interfaz visual
+    const resultadoEl = document.getElementById("codigo-resultado");
+    resultadoEl.innerText = `Último código: ${decodedText}`;
+    
+    // Feedback visual temporal: Poner fondo verde en el contenedor del texto
+    const statusBox = document.querySelector(".status-box");
+    statusBox.style.background = "#c8e6c9"; // Verde claro
+    setTimeout(() => {
+        statusBox.style.background = "#e3f2fd"; // Vuelve al azul original
+    }, 1000);
+    
+    // Agregar a la lista para PostgreSQL
+    codigosPendientes.push(decodedText);
+    document.getElementById("contador").innerText = codigosPendientes.length;
+    
+    // Activar botón de sincronización
+    const btn = document.getElementById("btn-sync");
+    btn.classList.add("active");
+}
 
-        const html5QrcodeScanner = new Html5QrcodeScanner("reader-android", config, false);
-        html5QrcodeScanner.render((text) => {
-            evaluarYRegistrarCodigo(text);
-        }, (err) => {});
+function onScanFailure(error) {
+    // El escáner analiza cuadros por segundo constantemente. 
+    // Dejar vacío para no inundar la consola de errores de "código no detectado".
+}
+
+function sincronizarPostgres() {
+    if(codigosPendientes.length === 0) {
+        alert("No hay códigos para sincronizar.");
+        return;
     }
+    
+    alert(`Sincronizando ${codigosPendientes.length} códigos con PostgreSQL...`);
+    // Tu futura integración con ServidorInventario.java irá aquí
+    
+    codigosPendientes = [];
+    document.getElementById("contador").innerText = "0";
+    document.getElementById("btn-sync").classList.remove("active");
+}
 
-    // Lógica común de validación anti-duplicados y alertas visuales
-    function evaluarYRegistrarCodigo(texto) {
-        const ahora = Date.now();
-        if (texto === ultimoCodigo && (ahora - ultimaLecturaTime) < 3000) {
-            return; 
-        }
+// Evento moderno y seguro que espera que todo el HTML y scripts externos estén listos
+document.addEventListener("DOMContentLoaded", iniciarCamara);
 
-        ultimoCodigo = texto;
-        ultimaLecturaTime = ahora;
-        
-        document.getElementById("codigo-resultado").innerText = `Último código: ${texto}`;
-        
-        // Alerta visual verde
-        const card = document.getElementById("status-card");
-        card.style.background = "#c6f6d5"; 
-        setTimeout(() => { card.style.background = "#ebf8ff"; }, 800);
-
-        codigosPendientes.push(texto);
-        document.getElementById("contador").innerText = codigosPendientes.length;
-        document.getElementById("btn-sync").classList.add("active");
-    }
-
-    function sincronizarPostgres() {
-        if(codigosPendientes.length === 0) {
-            alert("No hay códigos.");
-            return;
-        }
-        alert(`Sincronizando ${codigosPendientes.length} códigos con PostgreSQL...`);
-        
-        codigosPendientes = [];
-        document.getElementById("contador").innerText = "0";
-        document.getElementById("btn-sync").classList.remove("active");
-    }
-
-    // Inicializar la carga condicional al abrir la web
-    document.addEventListener("DOMContentLoaded", cargarLibreriaAdecuada);
 </script>
 
 </body>
